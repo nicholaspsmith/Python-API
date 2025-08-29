@@ -1,7 +1,6 @@
-import os
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-import json
 
 
 class ClaudeAPIManager:
@@ -85,3 +84,33 @@ class ClaudeAPIManager:
             batches.append(current_batch)
 
         return batches
+
+    async def make_request_with_retry(
+        self,
+        prompt: str,
+        max_retries: int = 3,
+        initial_delay: float = 1.0
+    ) -> Optional[str]:
+        """Make request with exponential backoff on rate limits"""
+        estimated_tokens = self.estimate_tokens(prompt) + 500
+        delay = initial_delay
+
+        for attempt in range(max_retries):
+            if self.can_make_request(estimated_tokens):
+                try:
+                    # TODO: replace with actual claude api call
+                    # simulate network delay
+                    await asyncio.sleep(0.1)
+                    self.record_usage(estimated_tokens, "api_request")
+                    return f"Claude response to: {prompt[:50]}..."
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(delay)
+                    delay *= 2
+            else:
+                # rate limited, wait then retry
+                print(f"Rate limited, waiting {delay}s before retry {attempt + 1}/{max_retries}")
+                delay *= 2
+
+        return None

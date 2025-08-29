@@ -1,47 +1,37 @@
-import time
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from sqlalchemy import Enum
+from sqlalchemy.orm import Session
 from typing import Optional, List
-
-# from rate_limiter import RateLimiter
+from database import get_db, TicketModel, Priority, TicketStatus
+from pydantic import BaseModel
+from datetime import datetime
 from claude_manager import ClaudeAPIManager
 
 app = FastAPI()
 
-# limiter = RateLimiter(max_requests=5, window_seconds=60)
-
-# @app.middleware("http")
-# async def rate_limit_middleware(request: Request, call_next):
-#   # use IP as client identifier
-#   client_id = request.client.host
-
-#   if not limiter.is_allowed(client_id):
-#     return JSONResponse(
-#       status_code=429,
-#       content={"detail": "Rate limit exceeded. Try again later."},
-#       headers={"X-Requests-Remaining": "0"}
-#     )
-
-#   response = await call_next(request)
-#   # add header showing remaining requests
-#   response.headers["X-Requests-Remaining"] = str(
-#     limiter.requests_remaining(client_id)
-#   )
-#   return response;
-
 claude = ClaudeAPIManager(api_key="", max_tokens_per_minute=10000)
 
 
-class Ticket(BaseModel):
-    id: Optional[int] = None
+class TicketCreate(BaseModel):
     title: str
     description: str
-    priority: str  # "low", "medium", "high", "critical"
-    status: str = "open"
+    priority: Optional[str] = Priority.MEDIUM.value
+    status: Optional[str] = TicketStatus.OPEN.value
 
+class TicketResponse(BaseModel):
+    id: int
+    title: str
+    description: str
+    priority: str
+    status: str
+    created_at: datetime
+    claude_suggested_priority: Optional[str] = None
+    claude_suggested_response: Optional[str] = None
 
-tickets = []
+    # Tell Pydantic to work with SQLAlchemy models
+    class Config:
+        from_attributes = True
 
 # Uvicorn built-in route
 # @app.get("/docs")
@@ -52,84 +42,57 @@ def read_root():
     return {"message": "Ticket tracking system running"}
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
+@app.post("/tickets", response_model=TicketResponse)
+def create_ticket(ticket: TicketCreate, db: Session = Depends(get_db)):
+    db_ticket = TicketModel(
+        title=ticket.title,
+        description=ticket.description,
+        priority=Priority(ticket.priority),
+        status=TicketStatus(ticket.status)
+    )
+
+    db.add(db_ticket)
+    db.commit()
+    db.refresh(db_ticket)
+
+    return db_ticket
 
 
-@app.post("/tickets")
-def create_ticket(ticket: Ticket):
-    ticket.id = len(tickets) + 1
-    tickets.append(ticket)
-    return ticket
-
-
-@app.get("/tickets")
-def get_tickets():
+@app.get("/tickets", response_model=List[TicketResponse])
+def get_tickets(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    tickets = db.query(TicketModel).offset(skip).limit(limit).all()
     return tickets
 
+@app.get("/tickets/{ticket_id}", response_model=TicketResponse)
+def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
+    ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
 
-@app.post("/analyze-ticket")
-async def analyze_ticket(ticket: Ticket):
-    """Analyze ticket priority and suggest response"""
-
-    prompt = f"Analyze this support ticket:\nTitle: {ticket.title}\nDescription: {ticket.description}"
-    # Add 500 tokens to allow space for Claude's response
+@app.put("/tickets/{ticket_id}/analyze", response_model=TicketResponse)
+async def analyze_and_update_ticket(ticket_id: int, db: Session = Depends(get_db)):
+    """Analyze ticket with Claude & save result to db"""
+    ticket = db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Claude analysis logic ##TODO
+    prompt = f"Analyze: {ticket.title} - {ticket.description}"
     estimated_tokens = claude.estimate_tokens(prompt) + 500
 
-    if not claude.can_make_request(estimated_tokens):
-        return JSONResponse(
-            status_code=429,
-            content={
-                "error": "Claude API rate limit reached. Try again later.",
-                "stats": claude.get_usage_stats(),
-            },
+    if claude.can_make_request(estimated_tokens):
+        # simulate Claude response
+        ticket.claude_suggested_priority = (
+            Priority.HIGH if "urgent" in ticket.description.lower()
+            else Priority.MEDIUM
         )
+        ticket.claude_suggested_response = "Thank you for contacting support."
+        ticket.tokens_used = estimated_tokens
 
-    # Simulate claude api call (todo: implement actual claude api call)
-    claude.record_usage(estimated_tokens, "ticket_analysis")
+        db.commit()
+        db.refresh(ticket)
 
-    # return mocked response (todo: implement actual response)
-    return {
-        "suggested_priority": (
-            "high" if "urgent" in ticket.description.lower() else "medium"
-        ),
-        "suggested_response": f"Thank you for contacting support about '{ticket.title}'. We will get back to you shortly.",
-        "tokens_used": estimated_tokens,
-        "stats": claude.get_usage_stats(),
-    }
+        claude.record_usage(estimated_tokens, "ticket_analysis")
 
-
-@app.post("/analyze-tickets")
-async def analyze_tickets(tickets: List[Ticket]):
-    """Batch analyze tickets"""
-    prompts = []
-    for ticket in tickets:
-        prompts.append(
-            f"Analyze this support ticket:\nTitle: {ticket.title}\nDescription: {ticket.description}"
-        )
-    batches = claude.create_batch_processor(prompts, max_batch_size=3)
-    responses = []
-    for num, batch in enumerate(batches):
-        for prompt in batch:
-                estimated_tokens = claude.estimate_tokens(prompt) + 500
-                if not claude.can_make_request(estimated_tokens):
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": "Claude API rate limit reached. Try again later.",
-                            "stats": claude.get_usage_stats(),
-                        },
-                    )
-
-                # Simulate claude api call (todo: implement actual claude api call)
-                claude.record_usage(estimated_tokens, "ticket_analysis")
-
-                # return mocked response (todo: implement actual response)
-                responses.append({
-                    "batch": num,
-                    "suggested_response": f"Thank you for contacting support. We will get back to you shortly.",
-                    "tokens_used": estimated_tokens,
-                    "stats": claude.get_usage_stats(),
-                })
-    return responses
+    return ticket
