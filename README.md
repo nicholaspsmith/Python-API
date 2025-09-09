@@ -2,9 +2,9 @@
 ## Installation
 
 ### Note about UV Package manager
-This application uses [uv](https://github.com/astral-sh/uv) to manage dependencies.
+*This application uses [uv](https://github.com/astral-sh/uv) to manage dependencies.*
 
-If you do not have uv installed, [install it](#install-uv)
+*If you do not have uv installed, [install it](#install-uv) before continuing.*
 
 ### Install Dependencies
 
@@ -30,8 +30,6 @@ uv run main.py --port 3000
 ```
 
 ### Server Options
-
-## All server options
 - --host
   - Sets server host
   - default = 0.0.0.0
