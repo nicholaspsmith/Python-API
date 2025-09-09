@@ -7,26 +7,28 @@ from database import get_db, TicketModel, Priority, TicketStatus
 from pydantic import BaseModel
 from datetime import datetime
 from claude_manager import ClaudeAPIManager
+from analytics import TicketAnalytics
 
-app = FastAPI()
+app = FastAPI(title="Ticket System")
 
 claude = ClaudeAPIManager(api_key="", max_tokens_per_minute=10000)
 
+analytics = TicketAnalytics()
 
 class TicketCreate(BaseModel):
     title: str
     description: str
-    priority: Optional[str] = Priority.MEDIUM.value
-    status: Optional[str] = TicketStatus.OPEN.value
+    priority: Priority = Priority.MEDIUM
+    status: TicketStatus = TicketStatus.OPEN
 
 class TicketResponse(BaseModel):
     id: int
     title: str
     description: str
-    priority: str
-    status: str
+    priority: Priority
+    status: TicketStatus
     created_at: datetime
-    claude_suggested_priority: Optional[str] = None
+    claude_suggested_priority: Optional[Priority] = None
     claude_suggested_response: Optional[str] = None
 
     # Tell Pydantic to work with SQLAlchemy models
@@ -47,8 +49,8 @@ def create_ticket(ticket: TicketCreate, db: Session = Depends(get_db)):
     db_ticket = TicketModel(
         title=ticket.title,
         description=ticket.description,
-        priority=Priority(ticket.priority),
-        status=TicketStatus(ticket.status)
+        priority=ticket.priority,
+        status=ticket.status
     )
 
     db.add(db_ticket)
@@ -96,3 +98,28 @@ async def analyze_and_update_ticket(ticket_id: int, db: Session = Depends(get_db
         claude.record_usage(estimated_tokens, "ticket_analysis")
 
     return ticket
+
+@app.get("/analytics/priority")
+def get_priority_analytics():
+    """Get priority distribution analytics"""
+    return analytics.analyze_priority_distribution()
+
+@app.get("/analytics/tokens")
+def get_token_analytics():
+    """Get Claude token usage analytics"""
+    return analytics.analyze_token_usage()
+
+@app.get("/analytics/timeline")
+def get_timeline_analytics():
+    """Get ticket creation timeline analytics"""
+    return analytics.time_series_analysis()
+
+@app.get("/analytics/summary")
+def get_summary_analytics():
+    """Get comprehensive summary statistics"""
+    return analytics.get_summary_statistics()
+
+# Initialize uvicorn server when main.py is run
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
